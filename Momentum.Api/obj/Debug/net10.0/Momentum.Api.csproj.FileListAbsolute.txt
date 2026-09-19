@@ -49,3 +49,4 @@ D:\harish\momentum project\Momentum.Api\bin\Debug\net10.0\ZstdSharp.dll
 D:\harish\momentum project\Momentum.Api\obj\Debug\net10.0\Momentum.Api.csproj.AssemblyReference.cache
 D:\harish\momentum project\Momentum.Api\obj\Debug\net10.0\Momentum.Api.MvcApplicationPartsAssemblyInfo.cs
 D:\harish\momentum project\Momentum.Api\obj\Debug\net10.0\Momentum.12628D9F.Up2Date
+D:\harish\momentum project\Momentum.Api\obj\Debug\net10.0\Momentum.Api.sourcelink.json

@@ -31,6 +31,11 @@ export interface User {
   email: string;
   fullName: string;
   createdAt: string;
+  profession?: string;
+  timezone?: string;
+  preferredTools?: string[];
+  skillLevel?: string;
+  bio?: string;
 }
 
 export interface AuthResponse {
