@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import { useTasksStore } from '../store';
+import { useTasksStore, useAdaptationStore } from '../store';
 import { StatusBadge } from '../components/StatusBadge';
 import CompleteTaskModal from '../components/CompleteTaskModal';
-import type { Plan, PlanTask } from '../lib/types';
-import { TaskStatus } from '../lib/types';
+import type { Plan, PlanTask, PlanChangeType } from '../lib/types';
+import { TaskStatus, PlanChangeTypeNames } from '../lib/types';
 import { formatDate } from '../lib/format';
 import {
   Calendar,
@@ -14,16 +14,43 @@ import {
   SkipForward,
   Layers,
   ArrowRight,
-  Plus
+  Plus,
+  Zap,
+  RefreshCw,
+  Check,
+  X,
+  TrendingUp,
+  Minus,
+  GitBranch,
 } from 'lucide-react';
+
+const changeTypeIcons: Record<PlanChangeType, typeof Zap> = {
+  [0]: Zap,       // NoChange
+  [1]: Minus,     // ReducedLoad
+  [2]: TrendingUp, // IncreasedChallenge
+  [3]: GitBranch,  // TaskBrokenDown
+  [4]: RefreshCw,  // Rescheduled
+};
+
+const changeTypeColors: Record<PlanChangeType, string> = {
+  [0]: 'text-slate-500 bg-slate-100',
+  [1]: 'text-amber-600 bg-amber-50',
+  [2]: 'text-emerald-600 bg-emerald-50',
+  [3]: 'text-indigo-600 bg-indigo-50',
+  [4]: 'text-blue-600 bg-blue-50',
+};
 
 export default function PlanPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTask, setSelectedTask] = useState<PlanTask | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [adaptPlanId, setAdaptPlanId] = useState<string | null>(null);
+  const [adaptModalOpen, setAdaptModalOpen] = useState(false);
+  const [adaptMode, setAdaptMode] = useState<'preview' | 'apply'>('preview');
 
   const { completeTask, skipTask } = useTasksStore();
+  const { changes, loading: adaptLoading, error: adaptError, previewAdaptation, applyAdaptation, clearChanges } = useAdaptationStore();
 
   const loadPlans = async () => {
     setLoading(true);
@@ -51,6 +78,31 @@ export default function PlanPage() {
       await skipTask(taskId);
       await loadPlans();
     }
+  };
+
+  const handleAdaptPreview = async (planId: string) => {
+    setAdaptPlanId(planId);
+    setAdaptMode('preview');
+    await previewAdaptation(planId);
+    setAdaptModalOpen(true);
+  };
+
+  const handleAdaptApply = async () => {
+    if (!adaptPlanId) return;
+    setAdaptMode('apply');
+    const appliedChanges = await applyAdaptation(adaptPlanId);
+    if (appliedChanges.length > 0) {
+      await loadPlans();
+    }
+    setAdaptModalOpen(false);
+    setAdaptPlanId(null);
+    clearChanges();
+  };
+
+  const handleAdaptCancel = () => {
+    setAdaptModalOpen(false);
+    setAdaptPlanId(null);
+    clearChanges();
   };
 
   return (
@@ -102,6 +154,9 @@ export default function PlanPage() {
               ? Math.round((completedCount / plan.tasks.length) * 100)
               : 0;
 
+            const pendingTasks = plan.tasks.filter((t) => t.status === TaskStatus.Pending).length;
+            const hasSignals = pendingTasks > 0 && (plan.tasks.some(t => t.status === TaskStatus.Completed || t.status === TaskStatus.Skipped));
+
             return (
               <div
                 key={plan.id}
@@ -122,18 +177,32 @@ export default function PlanPage() {
                       <h2 className="mt-2 text-base font-bold text-slate-900">{plan.summary}</h2>
                     </div>
 
-                    {/* Progress */}
-                    <div className="sm:w-48">
-                      <div className="flex justify-between text-xs font-semibold text-slate-600 mb-1">
-                        <span>Progress</span>
-                        <span>{progress}% ({completedCount}/{plan.tasks.length})</span>
+                    {/* Progress & Adapt Actions */}
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-4 w-full sm:w-auto">
+                      <div className="sm:w-48 flex-1">
+                        <div className="flex justify-between text-xs font-semibold text-slate-600 mb-1">
+                          <span>Progress</span>
+                          <span>{progress}% ({completedCount}/{plan.tasks.length})</span>
+                        </div>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                          <div
+                            className="h-full rounded-full bg-indigo-600 transition-all duration-500"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
-                        <div
-                          className="h-full rounded-full bg-indigo-600 transition-all duration-500"
-                          style={{ width: `${progress}%` }}
-                        />
-                      </div>
+
+                      {hasSignals && (
+                        <button
+                          type="button"
+                          onClick={() => handleAdaptPreview(plan.id)}
+                          disabled={adaptLoading}
+                          className="inline-flex items-center gap-2 rounded-xl bg-amber-50 hover:bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors disabled:opacity-50"
+                        >
+                          <Zap className="h-4 w-4" />
+                          Adapt Plan
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -251,6 +320,161 @@ export default function PlanPage() {
           await loadPlans();
         }}
       />
+
+      {/* Adaptation Modal */}
+      {adaptModalOpen && adaptPlanId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+          <div className="w-full max-w-2xl rounded-3xl bg-white p-0 shadow-2xl border border-slate-100 overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-100 p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                  <Zap className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">
+                    {adaptMode === 'preview' ? 'Preview Plan Adaptation' : 'Applying Adaptation'}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {adaptMode === 'preview'
+                      ? 'Review proposed changes based on your behavioral signals'
+                      : 'Updating plan tasks...'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleAdaptCancel}
+                disabled={adaptMode === 'apply'}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors disabled:opacity-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-5 max-h-[60vh] overflow-y-auto">
+              {adaptError && (
+                <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-700">
+                  {adaptError}
+                </div>
+              )}
+
+              {adaptMode === 'preview' && changes.length === 0 && !adaptLoading && (
+                <div className="text-center py-8">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                    <CheckCircle2 className="h-6 w-6" />
+                  </div>
+                  <h4 className="mt-3 font-semibold text-slate-900">Plan is on track</h4>
+                  <p className="mt-1 text-sm text-slate-500">
+                    No adaptation needed. Your current pace and completion patterns are healthy.
+                  </p>
+                </div>
+              )}
+
+              {adaptMode === 'preview' && changes.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold text-slate-700">
+                      {changes.filter(c => c.type !== 0).length} change{changes.filter(c => c.type !== 0).length !== 1 ? 's' : ''} proposed
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      Based on your personal model signals
+                    </span>
+                  </div>
+
+                  {changes.map((change, idx) => {
+                    if (change.type === 0) return null; // Skip "NoChange"
+                    const Icon = changeTypeIcons[change.type];
+                    const colorClass = changeTypeColors[change.type];
+
+                    return (
+                      <div key={idx} className="rounded-2xl border border-slate-100 bg-slate-50/50 p-4">
+                        <div className="flex items-start gap-3">
+                          <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${colorClass}`}>
+                            <Icon className="h-4 w-4" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <h4 className="font-semibold text-slate-900">{change.summary}</h4>
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${colorClass}`}>
+                                {PlanChangeTypeNames[change.type]}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-600">{change.explanation}</p>
+                            {change.affectedTaskIds.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {change.affectedTaskIds.slice(0, 5).map((taskId) => {
+                                  const task = plans.flatMap(p => p.tasks).find(t => t.id === taskId);
+                                  return task ? (
+                                    <span key={taskId} className="rounded-md bg-white px-2 py-0.5 text-[10px] font-mono text-slate-600 border border-slate-200">
+                                      #{task.order} {task.title}
+                                    </span>
+                                  ) : null;
+                                })}
+                                {change.affectedTaskIds.length > 5 && (
+                                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                                    +{change.affectedTaskIds.length - 5} more
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div className="mt-6 rounded-xl bg-indigo-50 p-4 border border-indigo-100">
+                    <p className="text-xs text-indigo-800">
+                      <strong>Transparency:</strong> These changes are calculated by the AdaptationEngine using only your recorded
+                      behavioral signals (completions, skips, delays). No AI guesswork or external data.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {adaptMode === 'apply' && (
+                <div className="text-center py-8">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 animate-pulse">
+                    <RefreshCw className="h-6 w-6 animate-spin" />
+                  </div>
+                  <h4 className="mt-3 font-semibold text-slate-900">Applying changes...</h4>
+                  <p className="mt-1 text-sm text-slate-500">Updating plan tasks and version</p>
+                </div>
+              )}
+            </div>
+
+            {adaptMode === 'preview' && changes.length > 0 && (
+              <div className="flex items-center justify-end gap-3 border-t border-slate-100 p-5">
+                <button
+                  onClick={handleAdaptCancel}
+                  className="rounded-xl px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAdaptApply}
+                  disabled={adaptLoading}
+                  className="inline-flex items-center gap-2 rounded-xl bg-amber-600 px-5 py-2 text-sm font-semibold text-white shadow-xs hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                >
+                  <Check className="h-4 w-4" />
+                  Apply Adaptation
+                </button>
+              </div>
+            )}
+
+            {adaptMode === 'apply' && (
+              <div className="flex items-center justify-center gap-3 border-t border-slate-100 p-5">
+                <button
+                  onClick={handleAdaptCancel}
+                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 transition-colors"
+                >
+                  <Check className="h-4 w-4" />
+                  Done
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

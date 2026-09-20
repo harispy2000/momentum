@@ -1,4 +1,5 @@
 import type {
+  AdaptationChange,
   AuthResponse,
   CompleteTaskRequest,
   CreateGoalRequest,
@@ -148,4 +149,20 @@ export const api = {
   // Personal Model & Explainability
   getPersonalModel: () => request<PersonalModel>('/model'),
   getInsights: () => request<{ insights: string[] }>('/model/insights'),
+
+  // Plan Adaptation
+  getPlanAdaptation: (planId: string) =>
+    request<{ planId: string; changes: AdaptationChange[] }>(`/plans/${planId}/adapt`),
+  applyPlanAdaptation: (planId: string) =>
+    request<{ planId: string; version: number; changes: AdaptationChange[] }>(`/plans/${planId}/adapt`, {
+      method: 'POST',
+    }),
+
+  // User Profile
+  getProfile: () => request<User>('/auth/me'),
+  updateProfile: (data: Partial<User>) =>
+    request<User>('/auth/profile', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 };

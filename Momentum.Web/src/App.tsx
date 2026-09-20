@@ -8,6 +8,7 @@ import DashboardPage from './pages/DashboardPage';
 import GoalsPage from './pages/GoalsPage';
 import PlanPage from './pages/PlanPage';
 import PersonalModelPage from './pages/PersonalModelPage';
+import ProfilePage from './pages/ProfilePage';
 import SplashScreen from './components/SplashScreen';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="goals" element={<GoalsPage />} />
           <Route path="plan" element={<PlanPage />} />
           <Route path="model" element={<PersonalModelPage />} />
+          <Route path="profile" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

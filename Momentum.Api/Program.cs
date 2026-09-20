@@ -3,12 +3,16 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
+using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver;
 using Momentum.Api.Data;
 using Momentum.Api.Models;
 using Momentum.Api.Services.Ai;
 using Momentum.Api.Services.Auth;
 using Momentum.Api.Services.PersonalModelService;
+using Momentum.Api.Engine;
 using TaskStatus = Momentum.Api.Models.TaskStatus;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -29,6 +33,7 @@ if (!string.IsNullOrWhiteSpace(mongoConnString))
 {
     try
     {
+        BsonSerializer.RegisterSerializer(new GuidSerializer(GuidRepresentation.Standard));
         var mongoClient = new MongoClient(mongoConnString);
         mongoDatabase = mongoClient.GetDatabase(mongoDbName);
         Console.WriteLine($"[Storage] Connected to MongoDB Atlas database: {mongoDbName}");
@@ -65,8 +70,27 @@ builder.Services.AddSingleton<IRepository<PersonalModel>>(sp =>
 // Core Services
 builder.Services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
 builder.Services.AddSingleton<IJwtService, JwtService>();
-builder.Services.AddSingleton<IAIService, HeuristicAiService>();
+
+// AI Service - choose based on configuration
+var aiProvider = config["AiSettings:Provider"] ?? "Heuristic";
+if (aiProvider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.Configure<OpenAiOptions>(config.GetSection("OpenAI"));
+    builder.Services.AddHttpClient<OpenAiService>(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(60);
+    });
+    builder.Services.AddSingleton<IAIService, OpenAiService>();
+    Console.WriteLine("[AI] Using OpenAI provider");
+}
+else
+{
+    builder.Services.AddSingleton<IAIService, HeuristicAiService>();
+    Console.WriteLine("[AI] Using Heuristic provider");
+}
+
 builder.Services.AddSingleton<IPersonalModelService, PersonalModelService>();
+builder.Services.AddSingleton<AdaptationEngine>();
 
 // CORS
 builder.Services.AddCors(options =>
@@ -188,7 +212,8 @@ auth.MapPost("/register", async (RegisterRequest req, IRepository<User> userRepo
 
     return Results.Ok(new AuthResponse(
         token,
-        new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt)
+        new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt,
+            user.Profession, user.Timezone, user.SkillLevel, user.Bio, user.PreferredTools)
     ));
 });
 
@@ -209,7 +234,8 @@ auth.MapPost("/login", async (LoginRequest req, IRepository<User> userRepo, IPas
     var token = jwt.GenerateToken(user);
     return Results.Ok(new AuthResponse(
         token,
-        new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt)
+        new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt,
+            user.Profession, user.Timezone, user.SkillLevel, user.Bio, user.PreferredTools)
     ));
 });
 
@@ -221,7 +247,29 @@ auth.MapGet("/me", async (ClaimsPrincipal userPrincipal, IRepository<User> userR
     var user = await userRepo.GetByIdAsync(userId);
     if (user == null) return Results.NotFound();
 
-    return Results.Ok(new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt));
+    return Results.Ok(new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt,
+        user.Profession, user.Timezone, user.SkillLevel, user.Bio, user.PreferredTools));
+}).RequireAuthorization();
+
+auth.MapPut("/profile", async (UpdateProfileDto dto, ClaimsPrincipal userPrincipal, IRepository<User> userRepo) =>
+{
+    var userId = GetCurrentUserId(userPrincipal);
+    if (userId == Guid.Empty) return Results.Unauthorized();
+
+    var user = await userRepo.GetByIdAsync(userId);
+    if (user == null) return Results.NotFound();
+
+    if (!string.IsNullOrWhiteSpace(dto.FullName)) user.FullName = dto.FullName.Trim();
+    if (dto.Profession != null) user.Profession = dto.Profession.Trim();
+    if (dto.Timezone != null) user.Timezone = dto.Timezone.Trim();
+    if (dto.SkillLevel != null) user.SkillLevel = dto.SkillLevel.Trim();
+    if (dto.Bio != null) user.Bio = dto.Bio.Trim();
+    if (dto.PreferredTools != null) user.PreferredTools = dto.PreferredTools;
+
+    await userRepo.UpdateAsync(user.Id, user);
+
+    return Results.Ok(new UserDto(user.Id, user.Email, user.FullName, user.CreatedAt,
+        user.Profession, user.Timezone, user.SkillLevel, user.Bio, user.PreferredTools));
 }).RequireAuthorization();
 
 // ==========================================
@@ -388,6 +436,75 @@ plans.MapGet("/{id:guid}", async (Guid id, ClaimsPrincipal user, IRepository<Pla
     return Results.Ok(plan);
 });
 
+plans.MapGet("/{id:guid}/adapt", async (
+    Guid id,
+    ClaimsPrincipal user,
+    IRepository<Plan> planRepo,
+    IRepository<PlanTask> taskRepo,
+    IRepository<BehaviorSignal> signalRepo,
+    IPersonalModelService modelService,
+    AdaptationEngine engine) =>
+{
+    var userId = GetCurrentUserId(user);
+    var plan = await planRepo.GetByIdAsync(id);
+    if (plan == null || plan.UserId != userId)
+    {
+        return Results.NotFound();
+    }
+
+    var tasks = await taskRepo.GetAllAsync(t => t.PlanId == plan.Id);
+    plan.Tasks = tasks.OrderBy(t => t.Order).ToList();
+
+    var model = await modelService.GetOrCreateModelAsync(userId);
+    var signals = await signalRepo.GetAllAsync(s => s.UserId == userId && s.PlanId == plan.Id);
+
+    var changes = engine.Adapt(plan, model, signals);
+
+    return Results.Ok(new { planId = plan.Id, changes });
+}).RequireAuthorization();
+
+plans.MapPost("/{id:guid}/adapt", async (
+    Guid id,
+    ClaimsPrincipal user,
+    IRepository<Plan> planRepo,
+    IRepository<PlanTask> taskRepo,
+    IRepository<BehaviorSignal> signalRepo,
+    IPersonalModelService modelService,
+    AdaptationEngine engine) =>
+{
+    var userId = GetCurrentUserId(user);
+    var plan = await planRepo.GetByIdAsync(id);
+    if (plan == null || plan.UserId != userId)
+    {
+        return Results.NotFound();
+    }
+
+    var tasks = await taskRepo.GetAllAsync(t => t.PlanId == plan.Id);
+    plan.Tasks = tasks.OrderBy(t => t.Order).ToList();
+
+    var model = await modelService.GetOrCreateModelAsync(userId);
+    var signals = await signalRepo.GetAllAsync(s => s.UserId == userId && s.PlanId == plan.Id);
+
+    var changes = engine.Adapt(plan, model, signals);
+
+    foreach (var change in changes)
+    {
+        foreach (var taskId in change.AffectedTaskIds)
+        {
+            var task = plan.Tasks.FirstOrDefault(t => t.Id == taskId);
+            if (task != null)
+            {
+                await taskRepo.UpdateAsync(task.Id, task);
+            }
+        }
+    }
+
+    plan.Version++;
+    await planRepo.UpdateAsync(plan.Id, plan);
+
+    return Results.Ok(new { planId = plan.Id, version = plan.Version, changes });
+}).RequireAuthorization();
+
 // ==========================================
 // 4. TASK MANAGEMENT & BEHAVIOR TRACKING
 // ==========================================
@@ -514,8 +631,26 @@ app.Run();
 // Request & Response Records
 public record RegisterRequest(string Email, string Password, string? FullName);
 public record LoginRequest(string Email, string Password);
-public record UserDto(Guid Id, string Email, string FullName, DateTime CreatedAt);
+public record UserDto(
+    Guid Id,
+    string Email,
+    string FullName,
+    DateTime CreatedAt,
+    string? Profession = null,
+    string? Timezone = null,
+    string? SkillLevel = null,
+    string? Bio = null,
+    List<string>? PreferredTools = null
+);
 public record AuthResponse(string Token, UserDto User);
 public record CreateGoalDto(string Title, string? Description, DateTime? TargetDate, GoalPriority Priority);
 public record CompleteTaskDto(int? ActualMinutes, string? Note);
 public record SkipTaskDto(string? Note);
+public record UpdateProfileDto(
+    string? FullName,
+    string? Profession,
+    string? Timezone,
+    string? SkillLevel,
+    string? Bio,
+    List<string>? PreferredTools
+);

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, getToken, setToken } from './lib/api';
-import type { CreateGoalRequest, Goal, PersonalModel, PlanTask, User } from './lib/types';
+import type { AdaptationChange, CreateGoalRequest, Goal, PersonalModel, PlanTask, User } from './lib/types';
 
 // ==========================================
 // AUTH STORE
@@ -147,12 +147,10 @@ export const useTasksStore = create<TasksState>((set, get) => ({
   },
   completeTask: async (id: string, actualMinutes?: number, note?: string) => {
     const result = await api.completeTask(id, { actualMinutes, note });
-    // Update local task states
     set({
       todayTasks: get().todayTasks.map((t) => (t.id === id ? result.task : t)),
       allTasks: get().allTasks.map((t) => (t.id === id ? result.task : t)),
     });
-    // Update model store directly
     useModelStore.getState().updateModel(result.personalModel);
   },
   skipTask: async (id: string, note?: string) => {
@@ -199,5 +197,78 @@ export const useModelStore = create<ModelState>((set) => ({
       model: updated,
       insights: updated.explainabilityStatements ?? [],
     });
+  },
+}));
+
+// ==========================================
+// ADAPTATION STORE
+// ==========================================
+interface AdaptationState {
+  changes: AdaptationChange[];
+  loading: boolean;
+  error: string | null;
+  previewAdaptation: (planId: string) => Promise<AdaptationChange[]>;
+  applyAdaptation: (planId: string) => Promise<AdaptationChange[]>;
+  clearChanges: () => void;
+}
+
+export const useAdaptationStore = create<AdaptationState>((set) => ({
+  changes: [],
+  loading: false,
+  error: null,
+  previewAdaptation: async (planId: string) => {
+    set({ loading: true, error: null });
+    try {
+      const result = await api.getPlanAdaptation(planId);
+      set({ changes: result.changes });
+      return result.changes;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to preview adaptation.';
+      set({ error: message });
+      return [];
+    } finally {
+      set({ loading: false });
+    }
+  },
+  applyAdaptation: async (planId: string) => {
+    set({ loading: true, error: null });
+    try {
+      const result = await api.applyPlanAdaptation(planId);
+      set({ changes: result.changes });
+      return result.changes;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to apply adaptation.';
+      set({ error: message });
+      return [];
+    } finally {
+      set({ loading: false });
+    }
+  },
+  clearChanges: () => set({ changes: [], error: null }),
+}));
+
+// ==========================================
+// PROFILE STORE
+// ==========================================
+interface ProfileState {
+  saving: boolean;
+  error: string | null;
+  updateProfile: (data: Partial<User>) => Promise<void>;
+}
+
+export const useProfileStore = create<ProfileState>((set) => ({
+  saving: false,
+  error: null,
+  updateProfile: async (data: Partial<User>) => {
+    set({ saving: true, error: null });
+    try {
+      const updated = await api.updateProfile(data);
+      useAuthStore.setState({ user: updated });
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : 'Failed to save profile.' });
+      throw err;
+    } finally {
+      set({ saving: false });
+    }
   },
 }));

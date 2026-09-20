@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 
 interface ThemeContextProps {
   theme: 'light' | 'dark';
@@ -35,8 +36,6 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
 export const useTheme = (): ThemeContextProps => {
   const ctx = useContext(ThemeContext);
-  if (!ctx) {
-    throw new Error('useTheme must be used within ThemeProvider');
-  }
+  if (!ctx) throw new Error('useTheme must be used within ThemeProvider');
   return ctx;
 };

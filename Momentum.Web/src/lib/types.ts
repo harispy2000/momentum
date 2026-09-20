@@ -113,6 +113,31 @@ export interface PersonalModel {
   updatedAt: string;
 }
 
+export const PlanChangeType = {
+  NoChange: 0,
+  ReducedLoad: 1,
+  IncreasedChallenge: 2,
+  TaskBrokenDown: 3,
+  Rescheduled: 4,
+} as const;
+export type PlanChangeType = (typeof PlanChangeType)[keyof typeof PlanChangeType];
+
+export const PlanChangeTypeNames: Record<PlanChangeType, string> = {
+  [PlanChangeType.NoChange]: 'No Change',
+  [PlanChangeType.ReducedLoad]: 'Reduced Load',
+  [PlanChangeType.IncreasedChallenge]: 'Increased Challenge',
+  [PlanChangeType.TaskBrokenDown]: 'Task Broken Down',
+  [PlanChangeType.Rescheduled]: 'Rescheduled',
+};
+
+export interface AdaptationChange {
+  planId: string;
+  type: PlanChangeType;
+  summary: string;
+  explanation: string;
+  affectedTaskIds: string[];
+}
+
 export interface BehaviorSignal {
   id: string;
   userId: string;
